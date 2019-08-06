@@ -12,6 +12,8 @@ class PixelSNAIL(nn.Module):
         super().__init__()
         self.attn_rep = attn_rep
         self.nr_resnet = nr_resnet
+        self.nr_logistic_mix = nr_logistic_mix
+        self.obs_dim = obs_dim
 
         self.conv1 = down_shifted_conv2d(obs_dim[0] + 1, nr_filters,
                                          filter_size=(1, 3))
@@ -64,3 +66,19 @@ class PixelSNAIL(nn.Module):
             ul_list.append(attn_block[rn+5](ul, mixed))
         out = self.nin_out(ul_list[-1])
         return out
+
+    def log_prob(self, x):
+        logits = self(x)
+        return -discretized_mix_logistic_loss(x, logits, self.nr_logistic_mix)
+
+    def sample(self, n, device):
+        c, h, w = self.obs_dim
+        samples = torch.zeros((n, c, h, w), dtype=torch.float32)
+        for r in tqdm(range(h)):
+            for c in range(w):
+                with torch.no_grad():
+                    logits = self(samples.to(device)).cpu()
+                    s = sample_from_discretized_mix_logistic(logits, self.nr_logistic_mix)
+                    samples[:, :, r, c] = s[:, :, r, c]
+        samples = samples * 0.5 + 0.5
+        return samples
