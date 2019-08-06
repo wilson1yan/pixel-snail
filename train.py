@@ -23,7 +23,7 @@ def train(model, optimizer, device, train_loader, epoch):
     for x, _ in train_loader:
         optimizer.zero_grad()
         x = x.to(device)
-        loss = -model.log_prob(x)
+        loss = -model.log_prob(x) / np.prod(x.shape)
         loss.backward()
         optimizer.step()
 
@@ -41,7 +41,7 @@ def test(model, device, test_loader, epoch):
     for x, _ in test_loader:
         with torch.no_grad():
             x = x.to(device)
-            loss = -model.log_prob(x)
+            loss = -model.log_prob(x) / np.prod(x.shape)
             total_loss += loss * x.shape[0]
     avg_loss = total_loss / len(test_loader.sampler) / np.log(2.)
     print('Epoch {}, Test Loss {:.4f} bits/dim'.format(epoch, avg_loss))
@@ -50,7 +50,7 @@ def test(model, device, test_loader, epoch):
 
 def sample(model, device, epoch):
     model.eval()
-    samples = model.sample(64, device)
+    samples = model.sample(8, device)
 
     folder = './samples'
     if not exists(folder):
@@ -82,10 +82,13 @@ def main():
     model = PixelSNAIL(obs_dim).to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
-    for e in range(args.epochs):
+    total_parameters = sum([np.prod(p.shape) for p in model.parameters() if p.requires_grad])
+    print('Total Parameters {}'.format(total_parameters))
+
+    for epoch in range(args.epochs):
         train(model, optimizer, device, train_loader, epoch)
         test(model, device, test_loader, epoch)
-        sample(model, device)
+        sample(model, device, epoch)
 
 
 if __name__ == '__main__':

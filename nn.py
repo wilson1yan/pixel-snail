@@ -1,4 +1,5 @@
 from functools import partial
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -145,14 +146,13 @@ skip connection parameter : 0 = no skip connection
                             2 = skip connection where skip input size === 2 * input size
 '''
 class gated_resnet(nn.Module):
-    def __init__(self, num_filters, conv_op, nonlinearity=concat_elu, skip_connection=0):
+    def __init__(self, num_filters, conv_op, nonlinearity=concat_elu, skip_connection_filters=0):
         super(gated_resnet, self).__init__()
-        self.skip_connection = skip_connection
         self.nonlinearity = nonlinearity
         self.conv_input = conv_op(2 * num_filters, num_filters) # cuz of concat elu
 
-        if skip_connection != 0 :
-            self.nin_skip = nin(2 * skip_connection * num_filters, num_filters)
+        if skip_connection_filters != 0 :
+            self.nin_skip = nin(skip_connection_filters, num_filters)
 
         self.dropout = nn.Dropout(0.5)
         self.conv_out = conv_op(2 * num_filters, 2 * num_filters)
@@ -188,9 +188,9 @@ class causal_attention(nn.Module):
         query = query.permute(0, 2, 3, 1).contiguous().view(qs[0], self.canvas_size, qs[1])
         key = key.permute(0, 2, 3, 1).contiguous().view(ks[0], self.canvas_size, ks[1])
         dot = torch.matmul(query, key.transpose(1, 2)) - (1. - self.causal_mask) * 1e10
-        dot = dot - torch.max(dot, axis=-1, keedim=True)[0]
+        dot = dot - torch.max(dot, dim=-1, keepdim=True)[0]
         causal_exp_dot = torch.exp(dot / np.sqrt(ks[-1]).astype(np.float32)) * self.causal_mask
-        causal_probs = causal_exp_dot / (torch.sum(causal_exp_dot, axis=-1, keeydim=True) + 1e-6)
+        causal_probs = causal_exp_dot / (torch.sum(causal_exp_dot, dim=-1, keepdim=True) + 1e-6)
         mixin = mixin.permute(0, 2, 3, 1).contiguous().view(ms[0], self.canvas_size, ms[1])
         mixed = torch.matmul(causal_probs, mixin)
         return mixed.view(qs[0], qs[2], qs[3], ms[1]).permute(0, 3, 1, 2).contiguous()
@@ -198,6 +198,9 @@ class causal_attention(nn.Module):
 ###############################################################################
 #                           utils                                             #
 ###############################################################################
+
+def log_sum_exp(x, *, dim=1):
+    return torch.logsumexp(x, dim=dim)
 
 def log_prob_from_logits(x, *, dim=1):
     m, _ = torch.max(x, dim, keepdim=True)
@@ -210,8 +213,8 @@ def logistic_logpdf(w, inv_stdv, log_scale):
 
 def discretized_mix_logistic_loss(x, l, nr_mix, sum_all=True):
     """ log-likelihood for mixture of discretized logistics, assumes the data has been rescaled to [-1,1] interval """
-    xs = x.shape  # true image (i.e. labels) to regress to, e.g. (B,32,32,3)
-    ls = l.shape  # predicted distribution, e.g. (B,32,32,100)
+    xs = list(x.shape)  # true image (i.e. labels) to regress to, e.g. (B,32,32,3)
+    ls = list(l.shape)  # predicted distribution, e.g. (B,32,32,100)
     # here and below: unpacking the params of the mixture of logistics
     logit_probs = l[:, :nr_mix, :, :]
     l = torch.reshape(l[:, nr_mix:, :, :], xs[:2] + [nr_mix * 3] + xs[2:])
@@ -264,9 +267,25 @@ def discretized_mix_logistic_loss(x, l, nr_mix, sum_all=True):
     else:
         return -torch.sum(log_sum_exp(log_probs), [1, 2])
 
+def torch_random_uniform(shape, minval=0, maxval=1):
+    return (maxval - minval) * torch.rand(shape) + minval
+
+def torch_one_hot(x, depth=None, axis=None, dtype=torch.float32, device='cpu'):
+    if axis is None:
+        axis = -1
+    assert depth is not None, 'need to specify a one-hot depth'
+
+    x_sh = list(x.shape)
+    if axis == -1:
+        inds_shape = x_sh + [depth]
+        axis = len(x_sh)
+    else:
+        inds_shape = x_sh[:axis] + [depth] + x_sh[axis:]
+
+    return torch.zeros(inds_shape, dtype=dtype).to(device).scatter_(axis, x.unsqueeze(axis), 1)
 
 def sample_from_discretized_mix_logistic(l, nr_mix, device='cpu'):
-    ls = l.shape  # (B, 100, 32, 32)
+    ls = list(l.shape)  # (B, 100, 32, 32)
     xs = [ls[0]] + [3] + ls[2:]  # (B, 3, 32, 32)
     # unpack parameters
     logit_probs = l[:, :nr_mix, :, :]
@@ -283,7 +302,6 @@ def sample_from_discretized_mix_logistic(l, nr_mix, device='cpu'):
     means = torch.sum(l[:, :, :nr_mix, :, :] * sel, 2)
     log_scales = torch.clamp(
         torch.sum(l[:, :, nr_mix:2 * nr_mix, :, :] * sel, 2), min=-7.)
-    log_scales -= temperature
 
     # sample from logistic & clip to interval
     # we don't actually round to the nearest 8bit value when sampling
