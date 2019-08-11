@@ -97,11 +97,11 @@ def main():
     kwargs = {'num_workers': 4, 'pin_memory': True, 'batch_size': args.batch_size}
     trainset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
     train_sampler = data.distributed.DistributedSampler(trainset, num_replicas=hvd.size(), rank=hvd.rank())
-    train_loader = data.DataLoader(trainset, sampler=sampler, **kwargs)
+    train_loader = data.DataLoader(trainset, sampler=train_sampler, **kwargs)
 
     testset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
     test_sampler = data.distributed.DistributedSampler(testset, num_replicas=hvd.size(), rank=hvd.rank())
-    test_loader = data.DataLoader(testset, sampler=sampler, **kwargs)
+    test_loader = data.DataLoader(testset, sampler=test_sampler, **kwargs)
 
     device = torch.device('cuda:{}'.format(hvd.local_rank()))
     obs_dim = trainset[0][0].shape
